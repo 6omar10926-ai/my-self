@@ -5,6 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p dist
 
+# الأيقونات تُضمَّن كـ data URI حتى يبقى الملف قائمًا بذاته
+ICON_SVG="data:image/svg+xml;base64,$(base64 -w0 assets/icon.svg)"
+ICON_PNG="data:image/png;base64,$(base64 -w0 assets/apple-touch-icon.png)"
+
 CSS=$(cat assets/styles.css)
 JS=$(cat assets/util.js assets/store.js assets/ui.js assets/forms.js assets/views.js assets/report.js assets/app.js)
 
@@ -12,6 +16,12 @@ JS=$(cat assets/util.js assets/store.js assets/ui.js assets/forms.js assets/view
 {
   echo '<title>منصّة أشغالي</title>'
   echo '<script>document.documentElement.setAttribute("dir","rtl");document.documentElement.setAttribute("lang","ar");</script>'
+  echo "<link rel=\"icon\" type=\"image/svg+xml\" href=\"$ICON_SVG\">"
+  echo "<link rel=\"apple-touch-icon\" href=\"$ICON_PNG\">"
+  echo '<meta name="apple-mobile-web-app-capable" content="yes">'
+  echo '<meta name="mobile-web-app-capable" content="yes">'
+  echo '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+  echo '<meta name="apple-mobile-web-app-title" content="منصّتي">'
   echo '<link rel="preconnect" href="https://fonts.googleapis.com">'
   echo '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
   echo '<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">'
@@ -20,7 +30,8 @@ JS=$(cat assets/util.js assets/store.js assets/ui.js assets/forms.js assets/view
   sed -n '/<body>/,/<\/body>/p' index.html \
     | sed '1d;$d' \
     | grep -v '<script src=' \
-    | sed 's|<link rel="stylesheet"[^>]*>||'
+    | sed 's|<link rel="stylesheet"[^>]*>||' \
+    | sed "s|src=\"assets/icon.svg\"|src=\"$ICON_SVG\"|" 
   echo '<script>'
   # نزع تسجيل عامل الخدمة (غير مطلوب في نسخة الملف الواحد)
   printf '%s\n' "$JS" | python3 -c "

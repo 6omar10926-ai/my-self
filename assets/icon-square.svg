@@ -5,8 +5,8 @@
       <stop offset="1" stop-color="#0b1220"/>
     </linearGradient>
   </defs>
-  <rect id="bg" width="512" height="512" rx="114" fill="url(#ground)"/>
-  <g id="dots" transform="translate(0,0)">
+  <rect id="bg" width="512" height="512" rx="0" fill="url(#ground)"/>
+  <g id="dots" transform="translate(256,256) scale(0.86) translate(-256,-256)">
     <circle cx="140" cy="140" r="38" fill="#3b82f6"/>
     <circle cx="256" cy="140" r="38" fill="#14b8a6"/>
     <circle cx="372" cy="140" r="38" fill="#a78bfa"/>

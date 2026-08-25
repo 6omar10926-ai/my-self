@@ -424,3 +424,5 @@ input,select,textarea{font-family:inherit;font-size:inherit}
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]) .day-ev{color:color-mix(in srgb,var(--ctx) 72%,#fff)}
 }
+
+img.brand-mark{display:block;border-radius:8px;flex-shrink:0}

@@ -1,7 +1,9 @@
 /* عامل الخدمة: تشغيل المنصّة بدون إنترنت */
-const CACHE = 'myself-v1';
+const CACHE = 'myself-v2';
 const ASSETS = [
-  './', './index.html', './manifest.webmanifest', './assets/icon.svg',
+  './', './index.html', './manifest.webmanifest',
+  './assets/icon.svg', './assets/icon-square.svg', './assets/icon-192.png', './assets/icon-512.png',
+  './assets/icon-maskable-512.png', './assets/apple-touch-icon.png', './assets/favicon-32.png',
   './assets/styles.css', './assets/util.js', './assets/store.js', './assets/ui.js',
   './assets/forms.js', './assets/views.js', './assets/report.js', './assets/app.js'
 ];
