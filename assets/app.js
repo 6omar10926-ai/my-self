@@ -127,7 +127,7 @@
       case 'print-report': window.print(); break;
 
       case 'export': exportData(); break;
-      case 'import': document.getElementById('importFile').click(); break;
+      case 'import': openImport(); break;
       case 'reset':
         UI.confirmBox('سيتم مسح كل المواعيد والمهام والتقارير من هذا الجهاز. متأكد؟', function () {
           Store.resetAll(); UI.toast('تم المسح'); render();
@@ -143,14 +143,64 @@
   });
 
   /* ------- استيراد / تصدير ------- */
-  function exportData() {
-    const blob = new Blob([Store.exportJSON()], { type: 'application/json' });
+  async function exportData() {
+    const json = Store.exportJSON();
+    const filename = 'نسخة-منصتي-' + U.todayISO() + '.json';
+
+    // في النسخة المستضافة يمرّ الحفظ عبر تأكيد من المتصفّح
+    if (global.claude && typeof global.claude.use === 'function') {
+      try {
+        const downloads = await global.claude.use('downloads');
+        if (downloads) {
+          await downloads.save({ filename: filename, data: json });
+          UI.toast('نُزّلت النسخة الاحتياطية');
+          return;
+        }
+      } catch (err) {
+        if (err && err.code === 'declined') { UI.toast('أُلغي التنزيل'); return; }
+        if (err && err.code === 'rate_limited') { UI.toast('انتظر لحظة ثم أعد المحاولة', 'err'); return; }
+        // خلاف ذلك نكمل بالطريقة الاعتيادية
+      }
+    }
+
+    const blob = new Blob([json], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'نسخة-منصتي-' + U.todayISO() + '.json';
+    a.download = filename;
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     UI.toast('نُزّلت النسخة الاحتياطية');
+  }
+
+  function applyImport(text) {
+    try {
+      Store.importJSON(text);
+      UI.closeModal();
+      UI.toast('تم الاستيراد ✔');
+      render();
+    } catch (err) {
+      UI.toast('الملف غير صالح — تأكد أنه ملف النسخة الاحتياطية', 'err');
+    }
+  }
+
+  function openImport() {
+    UI.openModal('استيراد نسخة احتياطية',
+      '<p class="muted small">اختر ملف النسخة، أو الصق محتواه هنا إن لم يفتح المتصفّح نافذة الملفات.</p>' +
+      '<div class="btn-row"><button class="btn" id="pickFile">📂 اختيار ملف</button></div>' +
+      '<label class="field mt"><span>أو ألصق محتوى الملف</span>' +
+        '<textarea id="pasteJson" rows="6" placeholder="{ &quot;version&quot;: 1, ... }"></textarea></label>' +
+      '<div class="form-actions"><button class="btn btn-primary" id="doImport">استيراد</button>' +
+        '<button class="btn btn-ghost" data-close>إلغاء</button></div>',
+      function (root) {
+        root.querySelector('#pickFile').onclick = function () {
+          document.getElementById('importFile').click();
+        };
+        root.querySelector('#doImport').onclick = function () {
+          const v = root.querySelector('#pasteJson').value.trim();
+          if (!v) { UI.toast('ألصق المحتوى أولًا', 'err'); return; }
+          applyImport(v);
+        };
+      });
   }
 
   document.addEventListener('change', function (e) {
@@ -158,15 +208,7 @@
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = function () {
-      try {
-        Store.importJSON(reader.result);
-        UI.toast('تم الاستيراد ✔');
-        render();
-      } catch (err) {
-        UI.toast('الملف غير صالح', 'err');
-      }
-    };
+    reader.onload = function () { applyImport(reader.result); };
     reader.readAsText(file);
   });
 
