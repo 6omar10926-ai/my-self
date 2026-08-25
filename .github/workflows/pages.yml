@@ -1,0 +1,44 @@
+# ينشر المنصّة تلقائيًا على GitHub Pages مع كل دفعة
+name: نشر المنصّة
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: بناء نسخة الملف الواحد
+        run: bash build.sh
+
+      - name: تجهيز الموقع
+        run: |
+          mkdir -p _site
+          cp -r index.html manifest.webmanifest sw.js assets _site/
+          mkdir -p _site/dist
+          cp dist/index.html _site/dist/index.html
+          # نسخة الملف الواحد متاحة أيضًا على /standalone.html
+          cp dist/index.html _site/standalone.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
