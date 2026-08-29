@@ -14,14 +14,26 @@
   function today(root) {
     const iso = U.todayISO();
     const occs = Store.occurrencesOn(iso);
-    const allTasks = Store.tasks();
-    const overdue = allTasks.filter(function (t) { return !t.done && t.due && t.due < iso; })
-                            .sort(function (a, b) { return a.due < b.due ? -1 : 1; });
-    const dueToday = allTasks.filter(function (t) { return !t.done && t.due === iso; });
-    const soon = allTasks.filter(function (t) {
+    const single = Store.oneOffTasks();
+
+    // المهام المتكرّرة تُحسب بمرّاتها المستحقّة، لا بالقالب
+    const routineToday = Store.taskOccurrencesBetween(iso, iso);
+    const routineMissed = Store.missedRoutineOccurrences(7);
+    const routineSoon = Store.taskOccurrencesBetween(U.addDays(iso, 1), U.addDays(iso, 3));
+    const routineDoneToday = Store.taskOccurrencesBetween(U.addDays(iso, -30), iso)
+      .filter(function (o) { return o.done && o.doneDate === iso; });
+
+    const overdue = single.filter(function (t) { return !t.done && t.due && t.due < iso; })
+                          .concat(routineMissed)
+                          .sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    const dueToday = single.filter(function (t) { return !t.done && t.due === iso; })
+                           .concat(routineToday.filter(function (o) { return !o.done; }));
+    const soon = single.filter(function (t) {
       return !t.done && t.due && t.due > iso && t.due <= U.addDays(iso, 3);
-    }).sort(function (a, b) { return a.due < b.due ? -1 : 1; });
-    const doneToday = allTasks.filter(function (t) { return t.done && t.doneDate === iso; });
+    }).concat(routineSoon.filter(function (o) { return !o.done; }))
+      .sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    const doneToday = single.filter(function (t) { return t.done && t.doneDate === iso; })
+                            .concat(routineDoneToday);
 
     const mk = U.monthKey(iso);
     const monthOccs = Store.occurrencesBetween(U.startOfMonth(mk), U.endOfMonth(mk));
@@ -50,7 +62,7 @@
 
       (overdue.length ? '<section class="block alert-block">' +
         UI.sectionTitle('⚠️ متأخرة — ابدأ بها') +
-        '<div class="list">' + overdue.slice(0, 6).map(function (t) { return UI.taskCard(t); }).join('') + '</div>' +
+        '<div class="list">' + overdue.slice(0, 8).map(function (t) { return UI.taskCard(t); }).join('') + '</div>' +
       '</section>' : '') +
 
       '<section class="block">' +
@@ -61,7 +73,9 @@
 
       '<section class="block">' +
         UI.sectionTitle('مهام اليوم', '<button class="btn btn-sm" data-act="add-task">+ مهمة</button>') +
-        (dueToday.length ? '<div class="list">' + dueToday.map(function (t) { return UI.taskCard(t); }).join('') + '</div>'
+        (dueToday.length ? '<div class="list">' + dueToday.map(function (t) {
+              return UI.taskCard(t, { streak: t.isOcc ? Store.taskStreak(Store.task(t.id)) : 0 });
+            }).join('') + '</div>'
                          : UI.empty('لا توجد مهام مستحقة اليوم')) +
       '</section>' +
 
@@ -103,8 +117,8 @@
     occs.forEach(function (o) { (byDate[o.date] = byDate[o.date] || []).push(o); });
 
     const tasksByDate = {};
-    Store.tasks().forEach(function (t) {
-      if (t.due && !t.done) (tasksByDate[t.due] = tasksByDate[t.due] || []).push(t);
+    Store.tasksDueBetween(cells[0], cells[cells.length - 1]).forEach(function (t) {
+      if (!t.done) (tasksByDate[t.due] = tasksByDate[t.due] || []).push(t);
     });
 
     const todayIso = U.todayISO();
@@ -137,7 +151,7 @@
     }).join('');
 
     const dayOccs = (byDate[state.selectedDate] || []);
-    const dayTasks = Store.tasks().filter(function (t) { return t.due === state.selectedDate; });
+    const dayTasks = Store.tasksDueBetween(state.selectedDate, state.selectedDate);
 
     root.innerHTML = '' +
       '<section class="cal-head">' +
@@ -182,41 +196,83 @@
   /* ======================= المهام ======================= */
   function tasks(root) {
     const iso = U.todayISO();
-    let list = Store.tasks().slice();
+    const mk = U.monthKey(iso);
+    const byCtx = function (x) { return state.taskContext === 'all' || x.contextId === state.taskContext; };
 
-    if (state.taskContext !== 'all') {
-      list = list.filter(function (t) { return t.contextId === state.taskContext; });
-    }
+    const single = Store.oneOffTasks().filter(byCtx);
+    const routines = Store.routineTasks().filter(byCtx);
+
+    const dueSoonWindow = Store.taskOccurrencesBetween(U.addDays(iso, -7), U.addDays(iso, 14)).filter(byCtx);
+    const missed = dueSoonWindow.filter(function (o) { return !o.done && o.due < iso; });
+    const occToday = dueSoonWindow.filter(function (o) { return o.due === iso; });
+    const occAhead = dueSoonWindow.filter(function (o) { return !o.done && o.due >= iso; });
+    const occDone = Store.taskOccurrencesBetween(U.addDays(iso, -30), iso).filter(byCtx)
+      .filter(function (o) { return o.done; });
 
     const counts = {
-      open: list.filter(function (t) { return !t.done; }).length,
-      today: list.filter(function (t) { return !t.done && t.due === iso; }).length,
-      overdue: list.filter(function (t) { return !t.done && t.due && t.due < iso; }).length,
-      done: list.filter(function (t) { return t.done; }).length
+      open: single.filter(function (t) { return !t.done; }).length + occAhead.length + missed.length,
+      today: single.filter(function (t) { return !t.done && t.due === iso; }).length +
+             occToday.filter(function (o) { return !o.done; }).length,
+      overdue: single.filter(function (t) { return !t.done && t.due && t.due < iso; }).length + missed.length,
+      routine: routines.length,
+      done: single.filter(function (t) { return t.done; }).length + occDone.length
     };
 
-    let shown = list;
-    if (state.taskFilter === 'open') shown = list.filter(function (t) { return !t.done; });
-    if (state.taskFilter === 'today') shown = list.filter(function (t) { return !t.done && t.due === iso; });
-    if (state.taskFilter === 'overdue') shown = list.filter(function (t) { return !t.done && t.due && t.due < iso; });
-    if (state.taskFilter === 'done') shown = list.filter(function (t) { return t.done; });
+    let shown = [];
+    let isRoutineView = false;
+
+    if (state.taskFilter === 'routine') {
+      isRoutineView = true;
+      shown = routines;
+    } else if (state.taskFilter === 'open') {
+      shown = single.filter(function (t) { return !t.done; }).concat(missed, occAhead);
+    } else if (state.taskFilter === 'today') {
+      shown = single.filter(function (t) { return !t.done && t.due === iso; })
+                    .concat(occToday.filter(function (o) { return !o.done; }));
+    } else if (state.taskFilter === 'overdue') {
+      shown = single.filter(function (t) { return !t.done && t.due && t.due < iso; }).concat(missed);
+    } else if (state.taskFilter === 'done') {
+      shown = single.filter(function (t) { return t.done; }).concat(occDone);
+    } else {
+      shown = single.concat(missed, occAhead, occDone);
+    }
 
     const prRank = { high: 0, mid: 1, low: 2 };
-    shown.sort(function (a, b) {
-      if (a.done !== b.done) return a.done ? 1 : -1;
-      if (a.done) return (b.doneAt || 0) - (a.doneAt || 0);
-      const ad = a.due || '9999', bd = b.due || '9999';
-      if (ad !== bd) return ad < bd ? -1 : 1;
-      return (prRank[a.priority] || 1) - (prRank[b.priority] || 1);
-    });
+    if (!isRoutineView) {
+      shown.sort(function (a, b) {
+        if (a.done !== b.done) return a.done ? 1 : -1;
+        if (a.done) return (b.doneAt || 0) - (a.doneAt || 0);
+        const ad = a.due || '9999', bd = b.due || '9999';
+        if (ad !== bd) return ad < bd ? -1 : 1;
+        return (prRank[a.priority] || 1) - (prRank[b.priority] || 1);
+      });
+    } else {
+      shown.sort(function (a, b) { return Store.taskStreak(b) - Store.taskStreak(a); });
+    }
 
     const filters = [
       ['open', 'مفتوحة', counts.open],
       ['overdue', 'متأخرة', counts.overdue],
       ['today', 'اليوم', counts.today],
+      ['routine', '🔁 متكرّرة', counts.routine],
       ['done', 'منجزة', counts.done],
-      ['all', 'الكل', list.length]
+      ['all', 'الكل', single.length + missed.length + occAhead.length + occDone.length]
     ];
+
+    const cards = isRoutineView
+      ? shown.map(function (t) {
+          const r = Store.taskRate(t, U.startOfMonth(mk), U.endOfMonth(mk));
+          const streak = Store.taskStreak(t);
+          // مستحقّة اليوم؟ تُعرض قابلة للتعليم. وإلا نعرض القالب مع موعد المرّة القادمة.
+          if (Store.recurDates(t.due, t.recur, iso, iso).length) {
+            return UI.taskCard(Store.materializeTask(t, iso), { streak: streak, rate: r });
+          }
+          const next = Store.recurDates(t.due, t.recur, U.addDays(iso, 1), U.addDays(iso, 400))[0] || '';
+          return UI.taskCard(t, { streak: streak, rate: r, template: true, nextDue: next });
+        }).join('')
+      : shown.map(function (t) {
+          return UI.taskCard(t, { streak: t.isOcc ? Store.taskStreak(Store.task(t.id)) : 0 });
+        }).join('');
 
     root.innerHTML = '' +
       '<section class="block">' +
@@ -232,8 +288,15 @@
               c.icon + ' ' + U.escapeHTML(c.name) + '</option>';
           }).join('') +
         '</select>' +
-        (shown.length ? '<div class="list mt">' + shown.map(function (t) { return UI.taskCard(t); }).join('') + '</div>'
-                      : UI.empty('ما فيه مهام هنا', 'أضف مهمة وعلّم عليها لما تخلّصها')) +
+        (isRoutineView
+          ? '<p class="muted small mt">مهامك المتكرّرة. علّم المربّع لإنجاز مرّة اليوم، والنسبة تخصّ ' +
+            U.monthLabel(mk) + '.</p>'
+          : '') +
+        (shown.length ? '<div class="list mt">' + cards + '</div>'
+                      : UI.empty(isRoutineView ? 'ما عندك مهام متكرّرة بعد'
+                                               : 'ما فيه مهام هنا',
+                                 isRoutineView ? 'أضف مهمة واختر «تتكرر؟» يوميًا أو أسبوعيًا أو بجدول تحدّده'
+                                               : 'أضف مهمة وعلّم عليها لما تخلّصها')) +
       '</section>';
 
     const sel = root.querySelector('#taskCtx');

@@ -104,9 +104,29 @@
         Forms.openEventForm(ev, null, render); break;
       }
       case 'task-toggle': {
-        const t = Store.toggleTask(taskCard.dataset.task);
-        UI.toast(t.done ? 'أحسنت — أُنجزت ✔' : 'رجعت مفتوحة');
+        const id = taskCard.dataset.task;
+        const date = taskCard.dataset.date || null;
+        const res = date ? Store.toggleTaskOccurrence(id, date) : Store.toggleTask(id);
+        if (res && res.done && date) {
+          const streak = Store.taskStreak(Store.task(id));
+          UI.toast(streak > 1 ? 'أحسنت — ' + streak + ' على التوالي 🔥' : 'أحسنت — أُنجزت ✔');
+        } else {
+          UI.toast(res && res.done ? 'أحسنت — أُنجزت ✔' : 'رجعت مفتوحة');
+        }
         render(); break;
+      }
+      case 'task-skip': {
+        const t = Store.task(taskCard.dataset.task);
+        const date = taskCard.dataset.date;
+        if (!t || !date) break;
+        UI.confirmBox('تخطّي «' + t.title + '» ليوم ' + U.fmtDate(date) + '؟ لن تُحتسب عليك.', function () {
+          const rec = Object.assign({}, t.recur);
+          rec.skip = (rec.skip || []).concat([date]);
+          Store.saveTask(Object.assign({}, t, { recur: rec }));
+          UI.toast('تُخطّيت هذه المرّة');
+          render();
+        }, 'نعم، تخطَّها');
+        break;
       }
       case 'task-edit':
         Forms.openTaskForm(Store.task(taskCard.dataset.task), render); break;

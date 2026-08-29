@@ -8,12 +8,25 @@
     const isPast = to < U.todayISO();
 
     const occs = Store.occurrencesBetween(from, to);
-    const tasksAll = Store.tasks();
+    // المهام المفردة فقط — المتكرّرة لها قسمها الخاص حتى لا تُشوّه النسبة
+    const tasksAll = Store.oneOffTasks();
 
     // مهام تخص الشهر: مستحقة فيه أو أُنجزت فيه
     const tasksOfMonth = tasksAll.filter(function (t) {
       return (t.due && U.monthKey(t.due) === mk) || (t.doneDate && U.monthKey(t.doneDate) === mk);
     });
+
+    // المهام المتكرّرة: نسبة الالتزام داخل الشهر لكل واحدة
+    const routines = Store.routineTasks().map(function (t) {
+      const r = Store.taskRate(t, from, to);
+      return { task: t, ctx: Store.context(t.contextId), due: r.due, done: r.done, rate: r.rate,
+               streak: Store.taskStreak(t), label: UI.recurLabel(t.recur) };
+    }).filter(function (r) { return r.due > 0; })
+      .sort(function (a, b) { return b.rate - a.rate; });
+
+    const routineDue = routines.reduce(function (n, r) { return n + r.due; }, 0);
+    const routineDone = routines.reduce(function (n, r) { return n + r.done; }, 0);
+    const routineRate = U.pct(routineDone, routineDue);
     const doneTasks = tasksOfMonth.filter(function (t) { return t.done; });
     const openTasks = tasksOfMonth.filter(function (t) { return !t.done; });
     const lateDone = doneTasks.filter(function (t) { return t.due && t.doneDate && t.doneDate > t.due; });
@@ -81,6 +94,16 @@
     const topCtx = active.slice().sort(function (a, b) { return (b.events + b.tasksDone) - (a.events + a.tasksDone); })[0];
     if (topCtx) wins.push('أكثر مجال أعطيته وقتك: ' + topCtx.ctx.name +
       ' (' + U.count(topCtx.events, 'event') + ' و' + U.count(topCtx.tasksDone, 'task') + ' منجزة).');
+    const strongRoutines = routines.filter(function (r) { return r.due >= 3 && r.rate >= 80; });
+    if (strongRoutines.length) {
+      wins.push('التزمت بمهامك المتكرّرة: ' + strongRoutines.slice(0, 4).map(function (r) {
+        return '«' + r.task.title + '» ' + r.rate + '٪'; }).join('، ') + '.');
+    }
+    const bestStreak = routines.slice().sort(function (a, b) { return b.streak - a.streak; })[0];
+    if (bestStreak && bestStreak.streak >= 3) {
+      wins.push('أطول سلسلة متواصلة: «' + bestStreak.task.title + '» ' +
+        U.count(bestStreak.streak, 'day') + ' بلا انقطاع.');
+    }
     const perfect = active.filter(function (r) { return r.tasks >= 3 && r.rate === 100; });
     if (perfect.length) wins.push('أغلقت كل مهام: ' + perfect.map(function (r) { return r.ctx.name; }).join('، ') + ' بنسبة ١٠٠٪.');
 
@@ -143,6 +166,15 @@
         fix: 'وزّع الالتزامات؛ اليوم المزدحم يأكل يومين بعده.'
       });
     }
+    const weakRoutines = routines.filter(function (r) { return r.due >= 3 && r.rate < 50; });
+    if (weakRoutines.length) {
+      issues.push({
+        title: 'مهام متكرّرة انقطعت عنها (' + weakRoutines.length + ')',
+        detail: weakRoutines.slice(0, 5).map(function (r) {
+          return '«' + r.task.title + '» ' + r.done + '/' + r.due + ' (' + r.rate + '٪)'; }).join(' · '),
+        fix: 'المتكرّر الذي تنجزه أقل من نصف مرّاته: إمّا جدوله أكبر من طاقتك فخفّف التكرار، أو ما عاد له داعٍ فاحذفه.'
+      });
+    }
     const lowCtx = active.filter(function (r) { return r.tasks >= 3 && r.rate < 50; });
     if (lowCtx.length) {
       issues.push({
@@ -167,6 +199,8 @@
     if (neglected.length) recs.push('راجع مجالاتك المهملة: هل تستحق أن تبقى على قائمتك؟');
     if (overloaded.length) recs.push('اجعل حدًّا أعلى: لا أكثر من ٤ التزامات في اليوم الواحد.');
     if (unmarkedPast.length >= 3) recs.push('عوّد نفسك على «إغلاق اليوم»: مراجعة سريعة كل مساء.');
+    if (routineDue && routineRate < 60) recs.push('نسبة التزامك بالمتكرّر ' + routineRate + '٪ — قلّل عددها أو خفّف تكرارها بدل أن تتراكم عليك.');
+    if (!routines.length) recs.push('حوّل ما تكرّره كل أسبوع (تقرير، متابعة، مراجعة) إلى مهمة متكرّرة بدل أن تتذكّره كل مرة.');
     recs.push('اكتب في أول الشهر ٣ نتائج تريد تحقيقها، وقس عليها آخر الشهر.');
 
     // مقارنة بالشهر السابق
@@ -189,6 +223,7 @@
         hours: hours, collected: collected, pending: pending
       },
       byCtx: byCtx, active: active, neglected: neglected, busiest: busiest,
+      routines: routines, routineDue: routineDue, routineDone: routineDone, routineRate: routineRate,
       wins: wins, issues: issues, recs: recs, compare: compare,
       doneTasks: doneTasks, openTasks: openTasks, doneEvents: doneEvents
     };
@@ -280,6 +315,25 @@
             }).join('') + '</tbody>' +
           '</table></div>' +
         '</section>' +
+
+        (r.routines.length ? '<section class="report-block">' +
+          '<h2>🔁 المهام المتكرّرة — نسبة الالتزام</h2>' +
+          '<p class="muted small">' + r.routineDone + ' من ' + r.routineDue + ' مرّة مستحقّة (' +
+            r.routineRate + '٪) خلال الشهر.</p>' +
+          '<div class="table-wrap"><table class="rep-table">' +
+            '<thead><tr><th>المهمة</th><th>المجال</th><th>الجدول</th><th>أُنجزت</th><th>النسبة</th><th>السلسلة</th></tr></thead>' +
+            '<tbody>' + r.routines.map(function (x) {
+              return '<tr>' +
+                '<td>' + U.escapeHTML(x.task.title) + '</td>' +
+                '<td><span class="dot" style="background:' + x.ctx.color + '"></span>' + U.escapeHTML(x.ctx.name) + '</td>' +
+                '<td class="muted">' + U.escapeHTML(x.label) + '</td>' +
+                '<td>' + x.done + '/' + x.due + '</td>' +
+                '<td><span class="rate ' + (x.rate >= 75 ? 'ok' : (x.rate < 50 ? 'bad' : 'mid')) + '">' + x.rate + '٪</span></td>' +
+                '<td>' + (x.streak ? '🔥 ' + x.streak : '—') + '</td>' +
+              '</tr>';
+            }).join('') + '</tbody>' +
+          '</table></div>' +
+        '</section>' : '') +
 
         '<section class="report-block wins">' +
           '<h2>🏅 أبرز ما أنجزته</h2>' +

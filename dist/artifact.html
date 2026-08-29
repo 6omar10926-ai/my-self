@@ -438,6 +438,24 @@ input,select,textarea{font-family:inherit;font-size:inherit}
 }
 
 img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
+
+/* ===== التكرار: حقول النموذج والمعاينة ===== */
+.recur-box{display:flex;flex-direction:column;gap:10px}
+.interval-row{flex-direction:row;align-items:center;gap:10px}
+.interval-label{font-size:.82rem;color:var(--muted);font-weight:500;white-space:nowrap}
+.interval-row input{width:84px;text-align:center;flex:none}
+.days-block{display:flex;flex-direction:column;gap:4px}
+.recur-preview{margin:0;padding-top:6px;border-top:1px dashed var(--border);line-height:1.7}
+
+/* ===== المهام المتكرّرة ===== */
+.card.is-routine{border-inline-start-style:double;border-inline-start-width:6px}
+.streak{color:var(--warn);font-weight:600}
+.task-card.is-done .streak{color:var(--ok)}
+
+.check.is-template{
+  border-style:dashed;background:var(--surface-2);color:var(--muted);
+  font-size:.8rem;cursor:default;
+}
 </style>
 
 <header class="topbar">
@@ -763,7 +781,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
   function occurrencesBetween(fromISO, toISO_) {
     const out = [];
     data.events.forEach(function (ev) {
-      dates(ev, fromISO, toISO_).forEach(function (d) {
+      recurDates(ev.date, ev.recur, fromISO, toISO_).forEach(function (d) {
         out.push(materialize(ev, d));
       });
     });
@@ -794,63 +812,72 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     return 'planned';
   }
 
-  function dates(ev, fromISO, toISO_) {
+  /* محرّك التكرار العام — يخدم الأحداث والمهام.
+     rec = { freq: none|daily|weekly|monthly, interval: كل كم، days: [٠-٦]، until، skip: [] } */
+  function isRecurring(item) {
+    return !!(item && item.recur && item.recur.freq && item.recur.freq !== 'none');
+  }
+
+  function recurDates(anchor, rec, fromISO, toISO_) {
     const res = [];
-    const rec = ev.recur && ev.recur.freq && ev.recur.freq !== 'none' ? ev.recur : null;
-    if (!rec) {
-      if (ev.date >= fromISO && ev.date <= toISO_) res.push(ev.date);
+    if (!anchor) return res;
+
+    if (!rec || !rec.freq || rec.freq === 'none') {
+      if (anchor >= fromISO && anchor <= toISO_) res.push(anchor);
       return res;
     }
+
+    const step = Math.max(1, Number(rec.interval) || 1);
     const until = rec.until || '2099-12-31';
     const skip = rec.skip || [];
     const limit = toISO_ < until ? toISO_ : until;
+    if (limit < anchor || limit < fromISO) return res;
+
+    const push = function (iso) {
+      if (iso >= fromISO && iso >= anchor && iso <= limit && skip.indexOf(iso) === -1) res.push(iso);
+    };
+
+    if (rec.freq === 'daily') {
+      let cur = anchor;
+      if (cur < fromISO) cur = U.addDays(cur, Math.floor(U.diffDays(fromISO, cur) / step) * step);
+      let guard = 0;
+      while (cur <= limit && guard++ < 3000) { push(cur); cur = U.addDays(cur, step); }
+      return res;
+    }
+
+    if (rec.freq === 'weekly') {
+      const days = (rec.days && rec.days.length) ? rec.days.slice().sort() : [U.weekdayOf(anchor)];
+      let weekStart = U.startOfWeek(anchor);
+      if (weekStart < fromISO) {
+        const cycles = Math.floor(U.diffDays(U.startOfWeek(fromISO), weekStart) / (7 * step));
+        weekStart = U.addDays(weekStart, cycles * 7 * step);
+      }
+      let guard = 0;
+      while (weekStart <= limit && guard++ < 3000) {
+        days.forEach(function (d) { push(U.addDays(weekStart, d)); });
+        weekStart = U.addDays(weekStart, 7 * step);
+      }
+      res.sort();
+      return res;
+    }
 
     if (rec.freq === 'monthly') {
       // نثبّت اليوم من تاريخ البداية حتى لا ينزلق الشهر (٣١ ← ٣ من الشهر التالي)
-      const anchor = U.parseISO(ev.date);
-      const day = anchor.getDate();
-      let mk = U.monthKey(fromISO > ev.date ? fromISO : ev.date);
+      const day = U.parseISO(anchor).getDate();
+      let mk = U.monthKey(anchor);
       let guard = 0;
-      while (guard++ < 400) {
+      while (U.endOfMonth(mk) < fromISO && guard++ < 900) mk = U.shiftMonth(mk, step);
+      guard = 0;
+      while (U.startOfMonth(mk) <= limit && guard++ < 900) {
         const parts = mk.split('-').map(Number);
-        const lastDay = U.parseISO(U.endOfMonth(mk));
-        const d = new Date(parts[0], parts[1] - 1, Math.min(day, lastDay.getDate()));
-        const iso = U.toISO(d);
-        if (iso > limit) break;
-        if (iso >= fromISO && iso >= ev.date && !skip.includes(iso)) res.push(iso);
-        mk = U.shiftMonth(mk, 1);
-        if (U.startOfMonth(mk) > limit) break;
+        const last = U.parseISO(U.endOfMonth(mk)).getDate();
+        push(U.toISO(new Date(parts[0], parts[1] - 1, Math.min(day, last))));
+        mk = U.shiftMonth(mk, step);
       }
       return res;
     }
 
-    const step = rec.freq === 'daily' ? 1 : 7;
-    let cur = ev.date;
-    if (cur < fromISO) {
-      const jumps = Math.floor(U.diffDays(fromISO, cur) / step);
-      cur = U.addDays(cur, Math.max(0, jumps - 1) * step);
-    }
-    let guard = 0;
-    while (cur <= limit && guard++ < 2000) {
-      if (cur >= fromISO && cur >= ev.date && matchesRecur(ev, rec, cur) && !skip.includes(cur)) {
-        res.push(cur);
-      }
-      cur = U.addDays(cur, 1);
-    }
     return res;
-  }
-
-  function matchesRecur(ev, rec, iso) {
-    if (iso < ev.date) return false;
-    if (rec.freq === 'daily') return true;
-    if (rec.freq === 'weekly') {
-      const days = rec.days && rec.days.length ? rec.days : [U.weekdayOf(ev.date)];
-      return days.includes(U.weekdayOf(iso));
-    }
-    if (rec.freq === 'monthly') {
-      return U.parseISO(iso).getDate() === U.parseISO(ev.date).getDate();
-    }
-    return false;
   }
 
   function setOccurrence(eventId, date, patch) {
@@ -886,6 +913,98 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     t.doneDate = t.done ? U.todayISO() : null;
     save();
     return t;
+  }
+
+  /* ---------- المهام المتكرّرة ---------- */
+  /* المهمة المتكرّرة قالب: كل مرّة مستحقّة لها حالتها الخاصة داخل occ */
+  function oneOffTasks() {
+    return data.tasks.filter(function (t) { return !isRecurring(t); });
+  }
+
+  function routineTasks() {
+    return data.tasks.filter(function (t) { return isRecurring(t); });
+  }
+
+  function materializeTask(t, date) {
+    const o = (t.occ && t.occ[date]) || {};
+    const inst = Object.assign({}, t, {
+      due: date,
+      occDate: date,
+      occId: t.id + '@' + date,
+      isOcc: true,
+      done: !!o.done,
+      doneAt: o.doneAt || null,
+      doneDate: o.done ? (o.doneDate || date) : null
+    });
+    delete inst.occ;
+    return inst;
+  }
+
+  /* كل مرّات المهام المتكرّرة داخل مدى زمني */
+  function taskOccurrencesBetween(fromISO, toISO_) {
+    const out = [];
+    routineTasks().forEach(function (t) {
+      recurDates(t.due, t.recur, fromISO, toISO_).forEach(function (d) {
+        out.push(materializeTask(t, d));
+      });
+    });
+    out.sort(function (a, b) { return a.due < b.due ? -1 : (a.due > b.due ? 1 : 0); });
+    return out;
+  }
+
+  /* المهام المستحقّة في مدى: المفردة + مرّات المتكرّرة */
+  function tasksDueBetween(fromISO, toISO_) {
+    const single = oneOffTasks().filter(function (t) {
+      return t.due && t.due >= fromISO && t.due <= toISO_;
+    });
+    return single.concat(taskOccurrencesBetween(fromISO, toISO_))
+      .sort(function (a, b) { return (a.due || '') < (b.due || '') ? -1 : 1; });
+  }
+
+  function toggleTaskOccurrence(id, date) {
+    const t = task(id);
+    if (!t) return null;
+    if (!isRecurring(t) || !date) return toggleTask(id);
+    t.occ = t.occ || {};
+    const cur = t.occ[date] || {};
+    const now = !cur.done;
+    t.occ[date] = Object.assign({}, cur, {
+      done: now,
+      doneAt: now ? Date.now() : null,
+      doneDate: now ? U.todayISO() : null
+    });
+    save();
+    return { id: t.id, done: now };
+  }
+
+  /* نسبة الالتزام داخل مدى زمني */
+  function taskRate(t, fromISO, toISO_) {
+    const all = recurDates(t.due, t.recur, fromISO, toISO_);
+    const done = all.filter(function (d) { return t.occ && t.occ[d] && t.occ[d].done; }).length;
+    return { due: all.length, done: done, rate: U.pct(done, all.length) };
+  }
+
+  /* عدد المرّات المتتالية المنجزة حتى الآن (اليوم لا يكسر السلسلة قبل انتهائه) */
+  function taskStreak(t) {
+    if (!isRecurring(t)) return 0;
+    const todayIso = U.todayISO();
+    const all = recurDates(t.due, t.recur, U.addDays(todayIso, -400), todayIso);
+    let streak = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      const o = (t.occ && t.occ[all[i]]) || {};
+      if (o.done) { streak++; continue; }
+      if (all[i] === todayIso) continue;
+      break;
+    }
+    return streak;
+  }
+
+  /* آخر المرّات الفائتة غير المنجزة (نافذة قصيرة حتى لا تغرق الشاشة) */
+  function missedRoutineOccurrences(daysBack) {
+    const todayIso = U.todayISO();
+    const from = U.addDays(todayIso, -(daysBack || 7));
+    return taskOccurrencesBetween(from, U.addDays(todayIso, -1))
+      .filter(function (o) { return !o.done; });
   }
 
   function deleteTask(id) {
@@ -928,6 +1047,9 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     events, event, saveEvent, deleteEvent,
     occurrencesBetween, occurrencesOn, setOccurrence, materialize,
     tasks, task, saveTask, toggleTask, deleteTask,
+    isRecurring, recurDates,
+    oneOffTasks, routineTasks, materializeTask, taskOccurrencesBetween, tasksDueBetween,
+    toggleTaskOccurrence, taskRate, taskStreak, missedRoutineOccurrences,
     reports, reportFor, saveReport,
     exportJSON, importJSON, resetAll,
     eventType: function (id) {
@@ -978,9 +1100,10 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     toastTimer = setTimeout(function () { toastEl.classList.add('hidden'); }, 2600);
   }
 
-  function confirmBox(message, onYes) {
+  function confirmBox(message, onYes, yesLabel) {
     openModal('تأكيد', '<p class="confirm-text">' + U.escapeHTML(message) + '</p>' +
-      '<div class="form-actions"><button class="btn btn-danger" id="cfmYes">نعم، احذف</button>' +
+      '<div class="form-actions"><button class="btn btn-danger" id="cfmYes">' +
+        U.escapeHTML(yesLabel || 'نعم، احذف') + '</button>' +
       '<button class="btn btn-ghost" data-close>إلغاء</button></div>',
       function (root) {
         root.querySelector('#cfmYes').onclick = function () { closeModal(); onYes(); };
@@ -1024,29 +1147,64 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
       '</article>';
   }
 
+  /* وصف التكرار بالعربي: «كل يومين»، «أسبوعيًا: أحد، ثلاثاء»، «كل ٣ أشهر» */
+  function recurLabel(rec) {
+    if (!rec || !rec.freq || rec.freq === 'none') return '';
+    const n = Math.max(1, Number(rec.interval) || 1);
+    if (rec.freq === 'daily') {
+      return n === 1 ? 'كل يوم' : (n === 2 ? 'كل يومين' : 'كل ' + U.count(n, 'day'));
+    }
+    if (rec.freq === 'weekly') {
+      const days = (rec.days && rec.days.length) ? rec.days : [];
+      const names = days.slice().sort().map(function (d) { return U.WEEKDAYS_SHORT[d]; }).join('، ');
+      const every = n === 1 ? 'كل أسبوع' : (n === 2 ? 'كل أسبوعين' : 'كل ' + n + ' أسابيع');
+      return names ? every + ': ' + names : every;
+    }
+    if (rec.freq === 'monthly') {
+      return n === 1 ? 'كل شهر' : (n === 2 ? 'كل شهرين' : 'كل ' + n + ' أشهر');
+    }
+    return '';
+  }
+
   function taskCard(t, opts) {
     opts = opts || {};
     const ctx = Store.context(t.contextId);
     const pr = Store.priority(t.priority);
-    const overdue = !t.done && t.due && t.due < U.todayISO();
+    const repeats = Store.isRecurring(t);
+    // بطاقة القالب (لا مرّة مستحقّة اليوم) لا تُعلَّم ولا تُوصف بالتأخر
+    const isTemplate = !!opts.template;
+    const overdue = !isTemplate && !t.done && t.due && t.due < U.todayISO();
+    const streak = opts.streak != null ? opts.streak : 0;
     return '' +
-      '<article class="card task-card' + (t.done ? ' is-done' : '') + (overdue ? ' is-overdue' : '') + '"' +
-        ' style="--ctx:' + ctx.color + '" data-task="' + t.id + '">' +
-        '<button class="check" data-act="task-toggle" aria-label="تبديل الإنجاز">' + (t.done ? '✔' : '') + '</button>' +
+      '<article class="card task-card' + (t.done ? ' is-done' : '') + (overdue ? ' is-overdue' : '') +
+        (repeats ? ' is-routine' : '') + '"' +
+        ' style="--ctx:' + ctx.color + '" data-task="' + t.id + '"' +
+        (t.occDate ? ' data-date="' + t.occDate + '"' : '') + '>' +
+        (isTemplate
+          ? '<span class="check is-template" title="لا مرّة مستحقّة اليوم">🔁</span>'
+          : '<button class="check" data-act="task-toggle" aria-label="تبديل الإنجاز">' + (t.done ? '✔' : '') + '</button>') +
         '<div class="card-main">' +
           '<div class="card-top">' +
             '<span class="chip" style="--ctx:' + ctx.color + '">' + ctx.icon + ' ' + U.escapeHTML(ctx.name) + '</span>' +
             '<span class="pill" style="--pc:' + pr.color + '">' + pr.name + '</span>' +
+            (repeats ? '<span class="muted small">🔁 ' + U.escapeHTML(recurLabel(t.recur)) + '</span>' : '') +
           '</div>' +
           '<h4 class="card-title">' + U.escapeHTML(t.title) + '</h4>' +
           '<div class="card-meta">' +
-            (t.due ? '<span class="' + (overdue ? 'danger' : '') + '">📅 ' + U.fmtRelative(t.due) + '</span>' : '<span class="muted">بدون موعد</span>') +
+            (isTemplate
+              ? (opts.nextDue ? '<span>📅 التالية: ' + U.fmtRelative(opts.nextDue) + '</span>'
+                              : '<span class="muted">انتهى تكرارها</span>')
+              : (t.due ? '<span class="' + (overdue ? 'danger' : '') + '">📅 ' + U.fmtRelative(t.due) + '</span>'
+                       : '<span class="muted">بدون موعد</span>')) +
             (t.estimate ? '<span>⏱ ' + U.escapeHTML(t.estimate) + '</span>' : '') +
+            (streak > 0 ? '<span class="streak">🔥 ' + streak + ' على التوالي</span>' : '') +
+            (opts.rate ? '<span class="muted">' + opts.rate.done + '/' + opts.rate.due + ' هذا الشهر (' + opts.rate.rate + '٪)</span>' : '') +
             (t.done && t.doneDate ? '<span class="ok-text">✔ أُنجزت ' + U.fmtDate(t.doneDate) + '</span>' : '') +
           '</div>' +
           (t.notes ? '<p class="card-notes">' + U.escapeHTML(t.notes) + '</p>' : '') +
         '</div>' +
         '<div class="card-side">' +
+          (repeats && t.occDate ? '<button class="mini-btn miss" data-act="task-skip" title="تخطّي هذه المرّة">تخطّي</button>' : '') +
           '<button class="mini-btn" data-act="task-edit">تعديل</button>' +
         '</div>' +
       '</article>';
@@ -1061,7 +1219,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     return '<div class="section-head"><h3>' + U.escapeHTML(title) + '</h3>' + (extra || '') + '</div>';
   }
 
-  global.UI = { openModal, closeModal, toast, confirmBox, eventCard, taskCard, empty, sectionTitle };
+  global.UI = { openModal, closeModal, toast, confirmBox, eventCard, taskCard, empty, sectionTitle, recurLabel };
 })(window);
 /* نماذج الإدخال: حدث، مهمة، مجال */
 (function (global) {
@@ -1087,11 +1245,97 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     }).join('');
   }
 
+  /* ---------------- حقول التكرار (مشتركة) ---------------- */
+  function recurFields(rec, opts) {
+    rec = rec || {};
+    opts = opts || {};
+    const freq = rec.freq || 'none';
+    const days = rec.days || [];
+    const interval = Math.max(1, Number(rec.interval) || 1);
+    const labels = opts.labels || {
+      none: 'بدون تكرار', daily: 'يومي', weekly: 'أسبوعي', monthly: 'شهري'
+    };
+    return '' +
+      '<div class="field">' +
+        '<span>' + (opts.title || 'التكرار') + '</span>' +
+        '<select name="freq" class="freq-sel">' +
+          ['none', 'daily', 'weekly', 'monthly'].map(function (k) {
+            return '<option value="' + k + '"' + (freq === k ? ' selected' : '') + '>' + labels[k] + '</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="recur-box' + (freq === 'none' ? ' hidden' : '') + '" data-recur>' +
+        '<label class="field interval-row">' +
+          '<span class="interval-label">كل كم؟</span>' +
+          '<input type="number" name="interval" min="1" max="99" value="' + interval + '">' +
+        '</label>' +
+        '<div class="days-block' + (freq === 'weekly' ? '' : ' hidden') + '" data-days>' +
+          '<span class="muted small">في أي أيام؟</span>' +
+          '<div class="days">' + U.WEEKDAYS_SHORT.map(function (d, i) {
+            return '<label class="day"><input type="checkbox" name="rday" value="' + i + '"' +
+              (days.indexOf(i) > -1 ? ' checked' : '') + '><span>' + d + '</span></label>';
+          }).join('') + '</div>' +
+        '</div>' +
+        '<label class="field"><span>يتكرر حتى (اختياري — اتركه فارغًا ليستمر)</span>' +
+          '<input type="date" name="until" value="' + (rec.until || '') + '"></label>' +
+        '<p class="recur-preview muted small" data-preview></p>' +
+      '</div>';
+  }
+
+  /* ربط سلوك حقول التكرار + معاينة حيّة */
+  function wireRecur(root, anchorInputName) {
+    const freqSel = root.querySelector('.freq-sel');
+    const box = root.querySelector('[data-recur]');
+    const daysBlock = root.querySelector('[data-days]');
+    const intervalLabel = root.querySelector('.interval-label');
+    const preview = root.querySelector('[data-preview]');
+    if (!freqSel) return;
+    // "كم" يتبعها مفرد منصوب: كل كم يومًا؟
+    const UNITS = { daily: 'كل كم يومًا؟', weekly: 'كل كم أسبوعًا؟', monthly: 'كل كم شهرًا؟' };
+
+    function anchor() {
+      const el = root.querySelector('[name="' + anchorInputName + '"]');
+      return (el && el.value) || U.todayISO();
+    }
+
+    function readRecur() {
+      return {
+        freq: freqSel.value,
+        interval: Math.max(1, Number(root.querySelector('[name="interval"]').value) || 1),
+        days: Array.prototype.map.call(root.querySelectorAll('input[name="rday"]:checked'),
+          function (i) { return Number(i.value); }),
+        until: root.querySelector('[name="until"]').value || '',
+        skip: []
+      };
+    }
+
+    function refresh() {
+      const f = freqSel.value;
+      box.classList.toggle('hidden', f === 'none');
+      daysBlock.classList.toggle('hidden', f !== 'weekly');
+      intervalLabel.textContent = UNITS[f] || 'كل كم؟';
+      if (f === 'none') { preview.textContent = ''; return; }
+      const rec = readRecur();
+      const a = anchor();
+      const next = Store.recurDates(a, rec, U.todayISO(), U.addDays(U.todayISO(), 400)).slice(0, 4);
+      preview.textContent = next.length
+        ? UI.recurLabel(rec) + ' — المرّات القادمة: ' +
+          next.map(function (d) { return U.fmtDate(d); }).join(' · ')
+        : 'ما فيه مرّات قادمة — راجع تاريخ البداية أو «يتكرر حتى».';
+    }
+
+    root.addEventListener('change', refresh);
+    root.addEventListener('input', function (e) {
+      if (e.target.name === 'interval') refresh();
+    });
+    refresh();
+    return readRecur;
+  }
+
   /* ---------------- حدث ---------------- */
   function eventForm(ev, presetDate) {
     ev = ev || {};
     const rec = ev.recur || { freq: 'none', days: [], until: '' };
-    const days = rec.days || [];
     return '' +
       '<form id="evForm" class="form">' +
         '<label class="field"><span>العنوان</span>' +
@@ -1111,24 +1355,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
             '<input type="number" name="amount" min="0" step="1" placeholder="0" value="' + (ev.amount || '') + '"></label>' +
           '<label class="field checkbox"><input type="checkbox" name="paid"' + (ev.paid ? ' checked' : '') + '><span>تم تحصيل المبلغ</span></label>' +
         '</div>' +
-        '<div class="field">' +
-          '<span>التكرار</span>' +
-          '<select name="freq" id="freqSel">' +
-            ['none:بدون تكرار', 'daily:يومي', 'weekly:أسبوعي', 'monthly:شهري'].map(function (o) {
-              const p = o.split(':');
-              return '<option value="' + p[0] + '"' + (rec.freq === p[0] ? ' selected' : '') + '>' + p[1] + '</option>';
-            }).join('') +
-          '</select>' +
-        '</div>' +
-        '<div id="recurBox" class="recur-box' + (rec.freq === 'weekly' ? '' : ' hidden') + '">' +
-          '<span class="muted small">أيام الأسبوع</span>' +
-          '<div class="days">' + U.WEEKDAYS_SHORT.map(function (d, i) {
-            return '<label class="day"><input type="checkbox" name="rday" value="' + i + '"' +
-              (days.includes(i) ? ' checked' : '') + '><span>' + d + '</span></label>';
-          }).join('') + '</div>' +
-        '</div>' +
-        '<label class="field" id="untilBox"' + (rec.freq === 'none' ? ' style="display:none"' : '') + '>' +
-          '<span>يتكرر حتى (اختياري)</span><input type="date" name="until" value="' + (rec.until || '') + '"></label>' +
+        recurFields(rec) +
         '<label class="field"><span>ملاحظات</span><textarea name="notes" rows="2" placeholder="تفاصيل، أرقام تواصل، متطلبات...">' + U.escapeHTML(ev.notes || '') + '</textarea></label>' +
         '<div class="form-actions">' +
           '<button type="submit" class="btn btn-primary">حفظ</button>' +
@@ -1140,19 +1367,13 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
 
   function openEventForm(ev, presetDate, onSaved) {
     UI.openModal(ev && ev.id ? 'تعديل موعد' : 'موعد جديد', eventForm(ev, presetDate), function (root) {
-      const freqSel = root.querySelector('#freqSel');
-      const recurBox = root.querySelector('#recurBox');
-      const untilBox = root.querySelector('#untilBox');
-      freqSel.addEventListener('change', function () {
-        recurBox.classList.toggle('hidden', freqSel.value !== 'weekly');
-        untilBox.style.display = freqSel.value === 'none' ? 'none' : '';
-      });
+      const readRecur = wireRecur(root, 'date');
 
       root.querySelector('#evForm').addEventListener('submit', function (e) {
         e.preventDefault();
         const f = new FormData(e.target);
-        const freq = f.get('freq');
-        const rdays = Array.from(root.querySelectorAll('input[name="rday"]:checked')).map(function (i) { return Number(i.value); });
+        const recur = readRecur();
+        recur.skip = (ev && ev.recur && ev.recur.skip) || [];
         const payload = {
           id: ev && ev.id ? ev.id : undefined,
           title: (f.get('title') || '').trim(),
@@ -1165,7 +1386,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
           amount: Number(f.get('amount') || 0),
           paid: !!f.get('paid'),
           notes: (f.get('notes') || '').trim(),
-          recur: { freq: freq, days: rdays, until: f.get('until') || '', skip: (ev && ev.recur && ev.recur.skip) || [] }
+          recur: recur
         };
         Store.saveEvent(payload);
         UI.closeModal();
@@ -1187,6 +1408,8 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
   /* ---------------- مهمة ---------------- */
   function taskForm(t) {
     t = t || {};
+    const rec = t.recur || { freq: 'none', days: [], interval: 1, until: '' };
+    const repeating = rec.freq && rec.freq !== 'none';
     return '' +
       '<form id="tkForm" class="form">' +
         '<label class="field"><span>المهمة</span>' +
@@ -1196,9 +1419,14 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
           '<label class="field"><span>الأولوية</span><select name="priority">' + prOptions(t.priority || 'mid') + '</select></label>' +
         '</div>' +
         '<div class="row">' +
-          '<label class="field"><span>الموعد النهائي</span><input type="date" name="due" value="' + (t.due || '') + '"></label>' +
+          '<label class="field"><span>' + (repeating ? 'تبدأ من' : 'الموعد النهائي') + '</span>' +
+            '<input type="date" name="due" value="' + (t.due || '') + '"></label>' +
           '<label class="field"><span>الوقت المتوقع</span><input name="estimate" placeholder="مثال: ساعة" value="' + U.escapeHTML(t.estimate || '') + '"></label>' +
         '</div>' +
+        recurFields(rec, {
+          title: 'تتكرر؟',
+          labels: { none: 'مرة واحدة', daily: 'يوميًا', weekly: 'أسبوعيًا', monthly: 'شهريًا' }
+        }) +
         '<label class="field"><span>ملاحظات</span><textarea name="notes" rows="2">' + U.escapeHTML(t.notes || '') + '</textarea></label>' +
         '<div class="form-actions">' +
           '<button type="submit" class="btn btn-primary">حفظ</button>' +
@@ -1210,9 +1438,22 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
 
   function openTaskForm(t, onSaved) {
     UI.openModal(t && t.id ? 'تعديل مهمة' : 'مهمة جديدة', taskForm(t), function (root) {
+      const readRecur = wireRecur(root, 'due');
+      const dueLabel = root.querySelector('[name="due"]').closest('.field').querySelector('span');
+      root.querySelector('.freq-sel').addEventListener('change', function (e) {
+        dueLabel.textContent = e.target.value === 'none' ? 'الموعد النهائي' : 'تبدأ من';
+      });
+
       root.querySelector('#tkForm').addEventListener('submit', function (e) {
         e.preventDefault();
         const f = new FormData(e.target);
+        const recur = readRecur();
+        recur.skip = (t && t.recur && t.recur.skip) || [];
+        const repeating = recur.freq !== 'none';
+        if (repeating && !f.get('due')) {
+          UI.toast('حدّد تاريخ البداية للمهمة المتكرّرة', 'err');
+          return;
+        }
         Store.saveTask({
           id: t && t.id ? t.id : undefined,
           title: (f.get('title') || '').trim(),
@@ -1221,9 +1462,11 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
           due: f.get('due') || '',
           estimate: (f.get('estimate') || '').trim(),
           notes: (f.get('notes') || '').trim(),
-          done: t ? !!t.done : false,
-          doneAt: t ? t.doneAt : null,
-          doneDate: t ? t.doneDate : null
+          recur: recur,
+          occ: (t && t.occ) || {},
+          done: repeating ? false : (t ? !!t.done : false),
+          doneAt: repeating ? null : (t ? t.doneAt : null),
+          doneDate: repeating ? null : (t ? t.doneDate : null)
         });
         UI.closeModal();
         UI.toast('تم حفظ المهمة ✔');
@@ -1322,14 +1565,26 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
   function today(root) {
     const iso = U.todayISO();
     const occs = Store.occurrencesOn(iso);
-    const allTasks = Store.tasks();
-    const overdue = allTasks.filter(function (t) { return !t.done && t.due && t.due < iso; })
-                            .sort(function (a, b) { return a.due < b.due ? -1 : 1; });
-    const dueToday = allTasks.filter(function (t) { return !t.done && t.due === iso; });
-    const soon = allTasks.filter(function (t) {
+    const single = Store.oneOffTasks();
+
+    // المهام المتكرّرة تُحسب بمرّاتها المستحقّة، لا بالقالب
+    const routineToday = Store.taskOccurrencesBetween(iso, iso);
+    const routineMissed = Store.missedRoutineOccurrences(7);
+    const routineSoon = Store.taskOccurrencesBetween(U.addDays(iso, 1), U.addDays(iso, 3));
+    const routineDoneToday = Store.taskOccurrencesBetween(U.addDays(iso, -30), iso)
+      .filter(function (o) { return o.done && o.doneDate === iso; });
+
+    const overdue = single.filter(function (t) { return !t.done && t.due && t.due < iso; })
+                          .concat(routineMissed)
+                          .sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    const dueToday = single.filter(function (t) { return !t.done && t.due === iso; })
+                           .concat(routineToday.filter(function (o) { return !o.done; }));
+    const soon = single.filter(function (t) {
       return !t.done && t.due && t.due > iso && t.due <= U.addDays(iso, 3);
-    }).sort(function (a, b) { return a.due < b.due ? -1 : 1; });
-    const doneToday = allTasks.filter(function (t) { return t.done && t.doneDate === iso; });
+    }).concat(routineSoon.filter(function (o) { return !o.done; }))
+      .sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    const doneToday = single.filter(function (t) { return t.done && t.doneDate === iso; })
+                            .concat(routineDoneToday);
 
     const mk = U.monthKey(iso);
     const monthOccs = Store.occurrencesBetween(U.startOfMonth(mk), U.endOfMonth(mk));
@@ -1358,7 +1613,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
 
       (overdue.length ? '<section class="block alert-block">' +
         UI.sectionTitle('⚠️ متأخرة — ابدأ بها') +
-        '<div class="list">' + overdue.slice(0, 6).map(function (t) { return UI.taskCard(t); }).join('') + '</div>' +
+        '<div class="list">' + overdue.slice(0, 8).map(function (t) { return UI.taskCard(t); }).join('') + '</div>' +
       '</section>' : '') +
 
       '<section class="block">' +
@@ -1369,7 +1624,9 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
 
       '<section class="block">' +
         UI.sectionTitle('مهام اليوم', '<button class="btn btn-sm" data-act="add-task">+ مهمة</button>') +
-        (dueToday.length ? '<div class="list">' + dueToday.map(function (t) { return UI.taskCard(t); }).join('') + '</div>'
+        (dueToday.length ? '<div class="list">' + dueToday.map(function (t) {
+              return UI.taskCard(t, { streak: t.isOcc ? Store.taskStreak(Store.task(t.id)) : 0 });
+            }).join('') + '</div>'
                          : UI.empty('لا توجد مهام مستحقة اليوم')) +
       '</section>' +
 
@@ -1411,8 +1668,8 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     occs.forEach(function (o) { (byDate[o.date] = byDate[o.date] || []).push(o); });
 
     const tasksByDate = {};
-    Store.tasks().forEach(function (t) {
-      if (t.due && !t.done) (tasksByDate[t.due] = tasksByDate[t.due] || []).push(t);
+    Store.tasksDueBetween(cells[0], cells[cells.length - 1]).forEach(function (t) {
+      if (!t.done) (tasksByDate[t.due] = tasksByDate[t.due] || []).push(t);
     });
 
     const todayIso = U.todayISO();
@@ -1445,7 +1702,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     }).join('');
 
     const dayOccs = (byDate[state.selectedDate] || []);
-    const dayTasks = Store.tasks().filter(function (t) { return t.due === state.selectedDate; });
+    const dayTasks = Store.tasksDueBetween(state.selectedDate, state.selectedDate);
 
     root.innerHTML = '' +
       '<section class="cal-head">' +
@@ -1490,41 +1747,83 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
   /* ======================= المهام ======================= */
   function tasks(root) {
     const iso = U.todayISO();
-    let list = Store.tasks().slice();
+    const mk = U.monthKey(iso);
+    const byCtx = function (x) { return state.taskContext === 'all' || x.contextId === state.taskContext; };
 
-    if (state.taskContext !== 'all') {
-      list = list.filter(function (t) { return t.contextId === state.taskContext; });
-    }
+    const single = Store.oneOffTasks().filter(byCtx);
+    const routines = Store.routineTasks().filter(byCtx);
+
+    const dueSoonWindow = Store.taskOccurrencesBetween(U.addDays(iso, -7), U.addDays(iso, 14)).filter(byCtx);
+    const missed = dueSoonWindow.filter(function (o) { return !o.done && o.due < iso; });
+    const occToday = dueSoonWindow.filter(function (o) { return o.due === iso; });
+    const occAhead = dueSoonWindow.filter(function (o) { return !o.done && o.due >= iso; });
+    const occDone = Store.taskOccurrencesBetween(U.addDays(iso, -30), iso).filter(byCtx)
+      .filter(function (o) { return o.done; });
 
     const counts = {
-      open: list.filter(function (t) { return !t.done; }).length,
-      today: list.filter(function (t) { return !t.done && t.due === iso; }).length,
-      overdue: list.filter(function (t) { return !t.done && t.due && t.due < iso; }).length,
-      done: list.filter(function (t) { return t.done; }).length
+      open: single.filter(function (t) { return !t.done; }).length + occAhead.length + missed.length,
+      today: single.filter(function (t) { return !t.done && t.due === iso; }).length +
+             occToday.filter(function (o) { return !o.done; }).length,
+      overdue: single.filter(function (t) { return !t.done && t.due && t.due < iso; }).length + missed.length,
+      routine: routines.length,
+      done: single.filter(function (t) { return t.done; }).length + occDone.length
     };
 
-    let shown = list;
-    if (state.taskFilter === 'open') shown = list.filter(function (t) { return !t.done; });
-    if (state.taskFilter === 'today') shown = list.filter(function (t) { return !t.done && t.due === iso; });
-    if (state.taskFilter === 'overdue') shown = list.filter(function (t) { return !t.done && t.due && t.due < iso; });
-    if (state.taskFilter === 'done') shown = list.filter(function (t) { return t.done; });
+    let shown = [];
+    let isRoutineView = false;
+
+    if (state.taskFilter === 'routine') {
+      isRoutineView = true;
+      shown = routines;
+    } else if (state.taskFilter === 'open') {
+      shown = single.filter(function (t) { return !t.done; }).concat(missed, occAhead);
+    } else if (state.taskFilter === 'today') {
+      shown = single.filter(function (t) { return !t.done && t.due === iso; })
+                    .concat(occToday.filter(function (o) { return !o.done; }));
+    } else if (state.taskFilter === 'overdue') {
+      shown = single.filter(function (t) { return !t.done && t.due && t.due < iso; }).concat(missed);
+    } else if (state.taskFilter === 'done') {
+      shown = single.filter(function (t) { return t.done; }).concat(occDone);
+    } else {
+      shown = single.concat(missed, occAhead, occDone);
+    }
 
     const prRank = { high: 0, mid: 1, low: 2 };
-    shown.sort(function (a, b) {
-      if (a.done !== b.done) return a.done ? 1 : -1;
-      if (a.done) return (b.doneAt || 0) - (a.doneAt || 0);
-      const ad = a.due || '9999', bd = b.due || '9999';
-      if (ad !== bd) return ad < bd ? -1 : 1;
-      return (prRank[a.priority] || 1) - (prRank[b.priority] || 1);
-    });
+    if (!isRoutineView) {
+      shown.sort(function (a, b) {
+        if (a.done !== b.done) return a.done ? 1 : -1;
+        if (a.done) return (b.doneAt || 0) - (a.doneAt || 0);
+        const ad = a.due || '9999', bd = b.due || '9999';
+        if (ad !== bd) return ad < bd ? -1 : 1;
+        return (prRank[a.priority] || 1) - (prRank[b.priority] || 1);
+      });
+    } else {
+      shown.sort(function (a, b) { return Store.taskStreak(b) - Store.taskStreak(a); });
+    }
 
     const filters = [
       ['open', 'مفتوحة', counts.open],
       ['overdue', 'متأخرة', counts.overdue],
       ['today', 'اليوم', counts.today],
+      ['routine', '🔁 متكرّرة', counts.routine],
       ['done', 'منجزة', counts.done],
-      ['all', 'الكل', list.length]
+      ['all', 'الكل', single.length + missed.length + occAhead.length + occDone.length]
     ];
+
+    const cards = isRoutineView
+      ? shown.map(function (t) {
+          const r = Store.taskRate(t, U.startOfMonth(mk), U.endOfMonth(mk));
+          const streak = Store.taskStreak(t);
+          // مستحقّة اليوم؟ تُعرض قابلة للتعليم. وإلا نعرض القالب مع موعد المرّة القادمة.
+          if (Store.recurDates(t.due, t.recur, iso, iso).length) {
+            return UI.taskCard(Store.materializeTask(t, iso), { streak: streak, rate: r });
+          }
+          const next = Store.recurDates(t.due, t.recur, U.addDays(iso, 1), U.addDays(iso, 400))[0] || '';
+          return UI.taskCard(t, { streak: streak, rate: r, template: true, nextDue: next });
+        }).join('')
+      : shown.map(function (t) {
+          return UI.taskCard(t, { streak: t.isOcc ? Store.taskStreak(Store.task(t.id)) : 0 });
+        }).join('');
 
     root.innerHTML = '' +
       '<section class="block">' +
@@ -1540,8 +1839,15 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
               c.icon + ' ' + U.escapeHTML(c.name) + '</option>';
           }).join('') +
         '</select>' +
-        (shown.length ? '<div class="list mt">' + shown.map(function (t) { return UI.taskCard(t); }).join('') + '</div>'
-                      : UI.empty('ما فيه مهام هنا', 'أضف مهمة وعلّم عليها لما تخلّصها')) +
+        (isRoutineView
+          ? '<p class="muted small mt">مهامك المتكرّرة. علّم المربّع لإنجاز مرّة اليوم، والنسبة تخصّ ' +
+            U.monthLabel(mk) + '.</p>'
+          : '') +
+        (shown.length ? '<div class="list mt">' + cards + '</div>'
+                      : UI.empty(isRoutineView ? 'ما عندك مهام متكرّرة بعد'
+                                               : 'ما فيه مهام هنا',
+                                 isRoutineView ? 'أضف مهمة واختر «تتكرر؟» يوميًا أو أسبوعيًا أو بجدول تحدّده'
+                                               : 'أضف مهمة وعلّم عليها لما تخلّصها')) +
       '</section>';
 
     const sel = root.querySelector('#taskCtx');
@@ -1690,12 +1996,25 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     const isPast = to < U.todayISO();
 
     const occs = Store.occurrencesBetween(from, to);
-    const tasksAll = Store.tasks();
+    // المهام المفردة فقط — المتكرّرة لها قسمها الخاص حتى لا تُشوّه النسبة
+    const tasksAll = Store.oneOffTasks();
 
     // مهام تخص الشهر: مستحقة فيه أو أُنجزت فيه
     const tasksOfMonth = tasksAll.filter(function (t) {
       return (t.due && U.monthKey(t.due) === mk) || (t.doneDate && U.monthKey(t.doneDate) === mk);
     });
+
+    // المهام المتكرّرة: نسبة الالتزام داخل الشهر لكل واحدة
+    const routines = Store.routineTasks().map(function (t) {
+      const r = Store.taskRate(t, from, to);
+      return { task: t, ctx: Store.context(t.contextId), due: r.due, done: r.done, rate: r.rate,
+               streak: Store.taskStreak(t), label: UI.recurLabel(t.recur) };
+    }).filter(function (r) { return r.due > 0; })
+      .sort(function (a, b) { return b.rate - a.rate; });
+
+    const routineDue = routines.reduce(function (n, r) { return n + r.due; }, 0);
+    const routineDone = routines.reduce(function (n, r) { return n + r.done; }, 0);
+    const routineRate = U.pct(routineDone, routineDue);
     const doneTasks = tasksOfMonth.filter(function (t) { return t.done; });
     const openTasks = tasksOfMonth.filter(function (t) { return !t.done; });
     const lateDone = doneTasks.filter(function (t) { return t.due && t.doneDate && t.doneDate > t.due; });
@@ -1763,6 +2082,16 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     const topCtx = active.slice().sort(function (a, b) { return (b.events + b.tasksDone) - (a.events + a.tasksDone); })[0];
     if (topCtx) wins.push('أكثر مجال أعطيته وقتك: ' + topCtx.ctx.name +
       ' (' + U.count(topCtx.events, 'event') + ' و' + U.count(topCtx.tasksDone, 'task') + ' منجزة).');
+    const strongRoutines = routines.filter(function (r) { return r.due >= 3 && r.rate >= 80; });
+    if (strongRoutines.length) {
+      wins.push('التزمت بمهامك المتكرّرة: ' + strongRoutines.slice(0, 4).map(function (r) {
+        return '«' + r.task.title + '» ' + r.rate + '٪'; }).join('، ') + '.');
+    }
+    const bestStreak = routines.slice().sort(function (a, b) { return b.streak - a.streak; })[0];
+    if (bestStreak && bestStreak.streak >= 3) {
+      wins.push('أطول سلسلة متواصلة: «' + bestStreak.task.title + '» ' +
+        U.count(bestStreak.streak, 'day') + ' بلا انقطاع.');
+    }
     const perfect = active.filter(function (r) { return r.tasks >= 3 && r.rate === 100; });
     if (perfect.length) wins.push('أغلقت كل مهام: ' + perfect.map(function (r) { return r.ctx.name; }).join('، ') + ' بنسبة ١٠٠٪.');
 
@@ -1825,6 +2154,15 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
         fix: 'وزّع الالتزامات؛ اليوم المزدحم يأكل يومين بعده.'
       });
     }
+    const weakRoutines = routines.filter(function (r) { return r.due >= 3 && r.rate < 50; });
+    if (weakRoutines.length) {
+      issues.push({
+        title: 'مهام متكرّرة انقطعت عنها (' + weakRoutines.length + ')',
+        detail: weakRoutines.slice(0, 5).map(function (r) {
+          return '«' + r.task.title + '» ' + r.done + '/' + r.due + ' (' + r.rate + '٪)'; }).join(' · '),
+        fix: 'المتكرّر الذي تنجزه أقل من نصف مرّاته: إمّا جدوله أكبر من طاقتك فخفّف التكرار، أو ما عاد له داعٍ فاحذفه.'
+      });
+    }
     const lowCtx = active.filter(function (r) { return r.tasks >= 3 && r.rate < 50; });
     if (lowCtx.length) {
       issues.push({
@@ -1849,6 +2187,8 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
     if (neglected.length) recs.push('راجع مجالاتك المهملة: هل تستحق أن تبقى على قائمتك؟');
     if (overloaded.length) recs.push('اجعل حدًّا أعلى: لا أكثر من ٤ التزامات في اليوم الواحد.');
     if (unmarkedPast.length >= 3) recs.push('عوّد نفسك على «إغلاق اليوم»: مراجعة سريعة كل مساء.');
+    if (routineDue && routineRate < 60) recs.push('نسبة التزامك بالمتكرّر ' + routineRate + '٪ — قلّل عددها أو خفّف تكرارها بدل أن تتراكم عليك.');
+    if (!routines.length) recs.push('حوّل ما تكرّره كل أسبوع (تقرير، متابعة، مراجعة) إلى مهمة متكرّرة بدل أن تتذكّره كل مرة.');
     recs.push('اكتب في أول الشهر ٣ نتائج تريد تحقيقها، وقس عليها آخر الشهر.');
 
     // مقارنة بالشهر السابق
@@ -1871,6 +2211,7 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
         hours: hours, collected: collected, pending: pending
       },
       byCtx: byCtx, active: active, neglected: neglected, busiest: busiest,
+      routines: routines, routineDue: routineDue, routineDone: routineDone, routineRate: routineRate,
       wins: wins, issues: issues, recs: recs, compare: compare,
       doneTasks: doneTasks, openTasks: openTasks, doneEvents: doneEvents
     };
@@ -1962,6 +2303,25 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
             }).join('') + '</tbody>' +
           '</table></div>' +
         '</section>' +
+
+        (r.routines.length ? '<section class="report-block">' +
+          '<h2>🔁 المهام المتكرّرة — نسبة الالتزام</h2>' +
+          '<p class="muted small">' + r.routineDone + ' من ' + r.routineDue + ' مرّة مستحقّة (' +
+            r.routineRate + '٪) خلال الشهر.</p>' +
+          '<div class="table-wrap"><table class="rep-table">' +
+            '<thead><tr><th>المهمة</th><th>المجال</th><th>الجدول</th><th>أُنجزت</th><th>النسبة</th><th>السلسلة</th></tr></thead>' +
+            '<tbody>' + r.routines.map(function (x) {
+              return '<tr>' +
+                '<td>' + U.escapeHTML(x.task.title) + '</td>' +
+                '<td><span class="dot" style="background:' + x.ctx.color + '"></span>' + U.escapeHTML(x.ctx.name) + '</td>' +
+                '<td class="muted">' + U.escapeHTML(x.label) + '</td>' +
+                '<td>' + x.done + '/' + x.due + '</td>' +
+                '<td><span class="rate ' + (x.rate >= 75 ? 'ok' : (x.rate < 50 ? 'bad' : 'mid')) + '">' + x.rate + '٪</span></td>' +
+                '<td>' + (x.streak ? '🔥 ' + x.streak : '—') + '</td>' +
+              '</tr>';
+            }).join('') + '</tbody>' +
+          '</table></div>' +
+        '</section>' : '') +
 
         '<section class="report-block wins">' +
           '<h2>🏅 أبرز ما أنجزته</h2>' +
@@ -2138,9 +2498,29 @@ img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
         Forms.openEventForm(ev, null, render); break;
       }
       case 'task-toggle': {
-        const t = Store.toggleTask(taskCard.dataset.task);
-        UI.toast(t.done ? 'أحسنت — أُنجزت ✔' : 'رجعت مفتوحة');
+        const id = taskCard.dataset.task;
+        const date = taskCard.dataset.date || null;
+        const res = date ? Store.toggleTaskOccurrence(id, date) : Store.toggleTask(id);
+        if (res && res.done && date) {
+          const streak = Store.taskStreak(Store.task(id));
+          UI.toast(streak > 1 ? 'أحسنت — ' + streak + ' على التوالي 🔥' : 'أحسنت — أُنجزت ✔');
+        } else {
+          UI.toast(res && res.done ? 'أحسنت — أُنجزت ✔' : 'رجعت مفتوحة');
+        }
         render(); break;
+      }
+      case 'task-skip': {
+        const t = Store.task(taskCard.dataset.task);
+        const date = taskCard.dataset.date;
+        if (!t || !date) break;
+        UI.confirmBox('تخطّي «' + t.title + '» ليوم ' + U.fmtDate(date) + '؟ لن تُحتسب عليك.', function () {
+          const rec = Object.assign({}, t.recur);
+          rec.skip = (rec.skip || []).concat([date]);
+          Store.saveTask(Object.assign({}, t, { recur: rec }));
+          UI.toast('تُخطّيت هذه المرّة');
+          render();
+        }, 'نعم، تخطَّها');
+        break;
       }
       case 'task-edit':
         Forms.openTaskForm(Store.task(taskCard.dataset.task), render); break;

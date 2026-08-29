@@ -125,7 +125,7 @@
   function occurrencesBetween(fromISO, toISO_) {
     const out = [];
     data.events.forEach(function (ev) {
-      dates(ev, fromISO, toISO_).forEach(function (d) {
+      recurDates(ev.date, ev.recur, fromISO, toISO_).forEach(function (d) {
         out.push(materialize(ev, d));
       });
     });
@@ -156,63 +156,72 @@
     return 'planned';
   }
 
-  function dates(ev, fromISO, toISO_) {
+  /* محرّك التكرار العام — يخدم الأحداث والمهام.
+     rec = { freq: none|daily|weekly|monthly, interval: كل كم، days: [٠-٦]، until، skip: [] } */
+  function isRecurring(item) {
+    return !!(item && item.recur && item.recur.freq && item.recur.freq !== 'none');
+  }
+
+  function recurDates(anchor, rec, fromISO, toISO_) {
     const res = [];
-    const rec = ev.recur && ev.recur.freq && ev.recur.freq !== 'none' ? ev.recur : null;
-    if (!rec) {
-      if (ev.date >= fromISO && ev.date <= toISO_) res.push(ev.date);
+    if (!anchor) return res;
+
+    if (!rec || !rec.freq || rec.freq === 'none') {
+      if (anchor >= fromISO && anchor <= toISO_) res.push(anchor);
       return res;
     }
+
+    const step = Math.max(1, Number(rec.interval) || 1);
     const until = rec.until || '2099-12-31';
     const skip = rec.skip || [];
     const limit = toISO_ < until ? toISO_ : until;
+    if (limit < anchor || limit < fromISO) return res;
+
+    const push = function (iso) {
+      if (iso >= fromISO && iso >= anchor && iso <= limit && skip.indexOf(iso) === -1) res.push(iso);
+    };
+
+    if (rec.freq === 'daily') {
+      let cur = anchor;
+      if (cur < fromISO) cur = U.addDays(cur, Math.floor(U.diffDays(fromISO, cur) / step) * step);
+      let guard = 0;
+      while (cur <= limit && guard++ < 3000) { push(cur); cur = U.addDays(cur, step); }
+      return res;
+    }
+
+    if (rec.freq === 'weekly') {
+      const days = (rec.days && rec.days.length) ? rec.days.slice().sort() : [U.weekdayOf(anchor)];
+      let weekStart = U.startOfWeek(anchor);
+      if (weekStart < fromISO) {
+        const cycles = Math.floor(U.diffDays(U.startOfWeek(fromISO), weekStart) / (7 * step));
+        weekStart = U.addDays(weekStart, cycles * 7 * step);
+      }
+      let guard = 0;
+      while (weekStart <= limit && guard++ < 3000) {
+        days.forEach(function (d) { push(U.addDays(weekStart, d)); });
+        weekStart = U.addDays(weekStart, 7 * step);
+      }
+      res.sort();
+      return res;
+    }
 
     if (rec.freq === 'monthly') {
       // نثبّت اليوم من تاريخ البداية حتى لا ينزلق الشهر (٣١ ← ٣ من الشهر التالي)
-      const anchor = U.parseISO(ev.date);
-      const day = anchor.getDate();
-      let mk = U.monthKey(fromISO > ev.date ? fromISO : ev.date);
+      const day = U.parseISO(anchor).getDate();
+      let mk = U.monthKey(anchor);
       let guard = 0;
-      while (guard++ < 400) {
+      while (U.endOfMonth(mk) < fromISO && guard++ < 900) mk = U.shiftMonth(mk, step);
+      guard = 0;
+      while (U.startOfMonth(mk) <= limit && guard++ < 900) {
         const parts = mk.split('-').map(Number);
-        const lastDay = U.parseISO(U.endOfMonth(mk));
-        const d = new Date(parts[0], parts[1] - 1, Math.min(day, lastDay.getDate()));
-        const iso = U.toISO(d);
-        if (iso > limit) break;
-        if (iso >= fromISO && iso >= ev.date && !skip.includes(iso)) res.push(iso);
-        mk = U.shiftMonth(mk, 1);
-        if (U.startOfMonth(mk) > limit) break;
+        const last = U.parseISO(U.endOfMonth(mk)).getDate();
+        push(U.toISO(new Date(parts[0], parts[1] - 1, Math.min(day, last))));
+        mk = U.shiftMonth(mk, step);
       }
       return res;
     }
 
-    const step = rec.freq === 'daily' ? 1 : 7;
-    let cur = ev.date;
-    if (cur < fromISO) {
-      const jumps = Math.floor(U.diffDays(fromISO, cur) / step);
-      cur = U.addDays(cur, Math.max(0, jumps - 1) * step);
-    }
-    let guard = 0;
-    while (cur <= limit && guard++ < 2000) {
-      if (cur >= fromISO && cur >= ev.date && matchesRecur(ev, rec, cur) && !skip.includes(cur)) {
-        res.push(cur);
-      }
-      cur = U.addDays(cur, 1);
-    }
     return res;
-  }
-
-  function matchesRecur(ev, rec, iso) {
-    if (iso < ev.date) return false;
-    if (rec.freq === 'daily') return true;
-    if (rec.freq === 'weekly') {
-      const days = rec.days && rec.days.length ? rec.days : [U.weekdayOf(ev.date)];
-      return days.includes(U.weekdayOf(iso));
-    }
-    if (rec.freq === 'monthly') {
-      return U.parseISO(iso).getDate() === U.parseISO(ev.date).getDate();
-    }
-    return false;
   }
 
   function setOccurrence(eventId, date, patch) {
@@ -248,6 +257,98 @@
     t.doneDate = t.done ? U.todayISO() : null;
     save();
     return t;
+  }
+
+  /* ---------- المهام المتكرّرة ---------- */
+  /* المهمة المتكرّرة قالب: كل مرّة مستحقّة لها حالتها الخاصة داخل occ */
+  function oneOffTasks() {
+    return data.tasks.filter(function (t) { return !isRecurring(t); });
+  }
+
+  function routineTasks() {
+    return data.tasks.filter(function (t) { return isRecurring(t); });
+  }
+
+  function materializeTask(t, date) {
+    const o = (t.occ && t.occ[date]) || {};
+    const inst = Object.assign({}, t, {
+      due: date,
+      occDate: date,
+      occId: t.id + '@' + date,
+      isOcc: true,
+      done: !!o.done,
+      doneAt: o.doneAt || null,
+      doneDate: o.done ? (o.doneDate || date) : null
+    });
+    delete inst.occ;
+    return inst;
+  }
+
+  /* كل مرّات المهام المتكرّرة داخل مدى زمني */
+  function taskOccurrencesBetween(fromISO, toISO_) {
+    const out = [];
+    routineTasks().forEach(function (t) {
+      recurDates(t.due, t.recur, fromISO, toISO_).forEach(function (d) {
+        out.push(materializeTask(t, d));
+      });
+    });
+    out.sort(function (a, b) { return a.due < b.due ? -1 : (a.due > b.due ? 1 : 0); });
+    return out;
+  }
+
+  /* المهام المستحقّة في مدى: المفردة + مرّات المتكرّرة */
+  function tasksDueBetween(fromISO, toISO_) {
+    const single = oneOffTasks().filter(function (t) {
+      return t.due && t.due >= fromISO && t.due <= toISO_;
+    });
+    return single.concat(taskOccurrencesBetween(fromISO, toISO_))
+      .sort(function (a, b) { return (a.due || '') < (b.due || '') ? -1 : 1; });
+  }
+
+  function toggleTaskOccurrence(id, date) {
+    const t = task(id);
+    if (!t) return null;
+    if (!isRecurring(t) || !date) return toggleTask(id);
+    t.occ = t.occ || {};
+    const cur = t.occ[date] || {};
+    const now = !cur.done;
+    t.occ[date] = Object.assign({}, cur, {
+      done: now,
+      doneAt: now ? Date.now() : null,
+      doneDate: now ? U.todayISO() : null
+    });
+    save();
+    return { id: t.id, done: now };
+  }
+
+  /* نسبة الالتزام داخل مدى زمني */
+  function taskRate(t, fromISO, toISO_) {
+    const all = recurDates(t.due, t.recur, fromISO, toISO_);
+    const done = all.filter(function (d) { return t.occ && t.occ[d] && t.occ[d].done; }).length;
+    return { due: all.length, done: done, rate: U.pct(done, all.length) };
+  }
+
+  /* عدد المرّات المتتالية المنجزة حتى الآن (اليوم لا يكسر السلسلة قبل انتهائه) */
+  function taskStreak(t) {
+    if (!isRecurring(t)) return 0;
+    const todayIso = U.todayISO();
+    const all = recurDates(t.due, t.recur, U.addDays(todayIso, -400), todayIso);
+    let streak = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      const o = (t.occ && t.occ[all[i]]) || {};
+      if (o.done) { streak++; continue; }
+      if (all[i] === todayIso) continue;
+      break;
+    }
+    return streak;
+  }
+
+  /* آخر المرّات الفائتة غير المنجزة (نافذة قصيرة حتى لا تغرق الشاشة) */
+  function missedRoutineOccurrences(daysBack) {
+    const todayIso = U.todayISO();
+    const from = U.addDays(todayIso, -(daysBack || 7));
+    return taskOccurrencesBetween(from, U.addDays(todayIso, -1))
+      .filter(function (o) { return !o.done; });
   }
 
   function deleteTask(id) {
@@ -290,6 +391,9 @@
     events, event, saveEvent, deleteEvent,
     occurrencesBetween, occurrencesOn, setOccurrence, materialize,
     tasks, task, saveTask, toggleTask, deleteTask,
+    isRecurring, recurDates,
+    oneOffTasks, routineTasks, materializeTask, taskOccurrencesBetween, tasksDueBetween,
+    toggleTaskOccurrence, taskRate, taskStreak, missedRoutineOccurrences,
     reports, reportFor, saveReport,
     exportJSON, importJSON, resetAll,
     eventType: function (id) {

@@ -22,11 +22,97 @@
     }).join('');
   }
 
+  /* ---------------- حقول التكرار (مشتركة) ---------------- */
+  function recurFields(rec, opts) {
+    rec = rec || {};
+    opts = opts || {};
+    const freq = rec.freq || 'none';
+    const days = rec.days || [];
+    const interval = Math.max(1, Number(rec.interval) || 1);
+    const labels = opts.labels || {
+      none: 'بدون تكرار', daily: 'يومي', weekly: 'أسبوعي', monthly: 'شهري'
+    };
+    return '' +
+      '<div class="field">' +
+        '<span>' + (opts.title || 'التكرار') + '</span>' +
+        '<select name="freq" class="freq-sel">' +
+          ['none', 'daily', 'weekly', 'monthly'].map(function (k) {
+            return '<option value="' + k + '"' + (freq === k ? ' selected' : '') + '>' + labels[k] + '</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="recur-box' + (freq === 'none' ? ' hidden' : '') + '" data-recur>' +
+        '<label class="field interval-row">' +
+          '<span class="interval-label">كل كم؟</span>' +
+          '<input type="number" name="interval" min="1" max="99" value="' + interval + '">' +
+        '</label>' +
+        '<div class="days-block' + (freq === 'weekly' ? '' : ' hidden') + '" data-days>' +
+          '<span class="muted small">في أي أيام؟</span>' +
+          '<div class="days">' + U.WEEKDAYS_SHORT.map(function (d, i) {
+            return '<label class="day"><input type="checkbox" name="rday" value="' + i + '"' +
+              (days.indexOf(i) > -1 ? ' checked' : '') + '><span>' + d + '</span></label>';
+          }).join('') + '</div>' +
+        '</div>' +
+        '<label class="field"><span>يتكرر حتى (اختياري — اتركه فارغًا ليستمر)</span>' +
+          '<input type="date" name="until" value="' + (rec.until || '') + '"></label>' +
+        '<p class="recur-preview muted small" data-preview></p>' +
+      '</div>';
+  }
+
+  /* ربط سلوك حقول التكرار + معاينة حيّة */
+  function wireRecur(root, anchorInputName) {
+    const freqSel = root.querySelector('.freq-sel');
+    const box = root.querySelector('[data-recur]');
+    const daysBlock = root.querySelector('[data-days]');
+    const intervalLabel = root.querySelector('.interval-label');
+    const preview = root.querySelector('[data-preview]');
+    if (!freqSel) return;
+    // "كم" يتبعها مفرد منصوب: كل كم يومًا؟
+    const UNITS = { daily: 'كل كم يومًا؟', weekly: 'كل كم أسبوعًا؟', monthly: 'كل كم شهرًا؟' };
+
+    function anchor() {
+      const el = root.querySelector('[name="' + anchorInputName + '"]');
+      return (el && el.value) || U.todayISO();
+    }
+
+    function readRecur() {
+      return {
+        freq: freqSel.value,
+        interval: Math.max(1, Number(root.querySelector('[name="interval"]').value) || 1),
+        days: Array.prototype.map.call(root.querySelectorAll('input[name="rday"]:checked'),
+          function (i) { return Number(i.value); }),
+        until: root.querySelector('[name="until"]').value || '',
+        skip: []
+      };
+    }
+
+    function refresh() {
+      const f = freqSel.value;
+      box.classList.toggle('hidden', f === 'none');
+      daysBlock.classList.toggle('hidden', f !== 'weekly');
+      intervalLabel.textContent = UNITS[f] || 'كل كم؟';
+      if (f === 'none') { preview.textContent = ''; return; }
+      const rec = readRecur();
+      const a = anchor();
+      const next = Store.recurDates(a, rec, U.todayISO(), U.addDays(U.todayISO(), 400)).slice(0, 4);
+      preview.textContent = next.length
+        ? UI.recurLabel(rec) + ' — المرّات القادمة: ' +
+          next.map(function (d) { return U.fmtDate(d); }).join(' · ')
+        : 'ما فيه مرّات قادمة — راجع تاريخ البداية أو «يتكرر حتى».';
+    }
+
+    root.addEventListener('change', refresh);
+    root.addEventListener('input', function (e) {
+      if (e.target.name === 'interval') refresh();
+    });
+    refresh();
+    return readRecur;
+  }
+
   /* ---------------- حدث ---------------- */
   function eventForm(ev, presetDate) {
     ev = ev || {};
     const rec = ev.recur || { freq: 'none', days: [], until: '' };
-    const days = rec.days || [];
     return '' +
       '<form id="evForm" class="form">' +
         '<label class="field"><span>العنوان</span>' +
@@ -46,24 +132,7 @@
             '<input type="number" name="amount" min="0" step="1" placeholder="0" value="' + (ev.amount || '') + '"></label>' +
           '<label class="field checkbox"><input type="checkbox" name="paid"' + (ev.paid ? ' checked' : '') + '><span>تم تحصيل المبلغ</span></label>' +
         '</div>' +
-        '<div class="field">' +
-          '<span>التكرار</span>' +
-          '<select name="freq" id="freqSel">' +
-            ['none:بدون تكرار', 'daily:يومي', 'weekly:أسبوعي', 'monthly:شهري'].map(function (o) {
-              const p = o.split(':');
-              return '<option value="' + p[0] + '"' + (rec.freq === p[0] ? ' selected' : '') + '>' + p[1] + '</option>';
-            }).join('') +
-          '</select>' +
-        '</div>' +
-        '<div id="recurBox" class="recur-box' + (rec.freq === 'weekly' ? '' : ' hidden') + '">' +
-          '<span class="muted small">أيام الأسبوع</span>' +
-          '<div class="days">' + U.WEEKDAYS_SHORT.map(function (d, i) {
-            return '<label class="day"><input type="checkbox" name="rday" value="' + i + '"' +
-              (days.includes(i) ? ' checked' : '') + '><span>' + d + '</span></label>';
-          }).join('') + '</div>' +
-        '</div>' +
-        '<label class="field" id="untilBox"' + (rec.freq === 'none' ? ' style="display:none"' : '') + '>' +
-          '<span>يتكرر حتى (اختياري)</span><input type="date" name="until" value="' + (rec.until || '') + '"></label>' +
+        recurFields(rec) +
         '<label class="field"><span>ملاحظات</span><textarea name="notes" rows="2" placeholder="تفاصيل، أرقام تواصل، متطلبات...">' + U.escapeHTML(ev.notes || '') + '</textarea></label>' +
         '<div class="form-actions">' +
           '<button type="submit" class="btn btn-primary">حفظ</button>' +
@@ -75,19 +144,13 @@
 
   function openEventForm(ev, presetDate, onSaved) {
     UI.openModal(ev && ev.id ? 'تعديل موعد' : 'موعد جديد', eventForm(ev, presetDate), function (root) {
-      const freqSel = root.querySelector('#freqSel');
-      const recurBox = root.querySelector('#recurBox');
-      const untilBox = root.querySelector('#untilBox');
-      freqSel.addEventListener('change', function () {
-        recurBox.classList.toggle('hidden', freqSel.value !== 'weekly');
-        untilBox.style.display = freqSel.value === 'none' ? 'none' : '';
-      });
+      const readRecur = wireRecur(root, 'date');
 
       root.querySelector('#evForm').addEventListener('submit', function (e) {
         e.preventDefault();
         const f = new FormData(e.target);
-        const freq = f.get('freq');
-        const rdays = Array.from(root.querySelectorAll('input[name="rday"]:checked')).map(function (i) { return Number(i.value); });
+        const recur = readRecur();
+        recur.skip = (ev && ev.recur && ev.recur.skip) || [];
         const payload = {
           id: ev && ev.id ? ev.id : undefined,
           title: (f.get('title') || '').trim(),
@@ -100,7 +163,7 @@
           amount: Number(f.get('amount') || 0),
           paid: !!f.get('paid'),
           notes: (f.get('notes') || '').trim(),
-          recur: { freq: freq, days: rdays, until: f.get('until') || '', skip: (ev && ev.recur && ev.recur.skip) || [] }
+          recur: recur
         };
         Store.saveEvent(payload);
         UI.closeModal();
@@ -122,6 +185,8 @@
   /* ---------------- مهمة ---------------- */
   function taskForm(t) {
     t = t || {};
+    const rec = t.recur || { freq: 'none', days: [], interval: 1, until: '' };
+    const repeating = rec.freq && rec.freq !== 'none';
     return '' +
       '<form id="tkForm" class="form">' +
         '<label class="field"><span>المهمة</span>' +
@@ -131,9 +196,14 @@
           '<label class="field"><span>الأولوية</span><select name="priority">' + prOptions(t.priority || 'mid') + '</select></label>' +
         '</div>' +
         '<div class="row">' +
-          '<label class="field"><span>الموعد النهائي</span><input type="date" name="due" value="' + (t.due || '') + '"></label>' +
+          '<label class="field"><span>' + (repeating ? 'تبدأ من' : 'الموعد النهائي') + '</span>' +
+            '<input type="date" name="due" value="' + (t.due || '') + '"></label>' +
           '<label class="field"><span>الوقت المتوقع</span><input name="estimate" placeholder="مثال: ساعة" value="' + U.escapeHTML(t.estimate || '') + '"></label>' +
         '</div>' +
+        recurFields(rec, {
+          title: 'تتكرر؟',
+          labels: { none: 'مرة واحدة', daily: 'يوميًا', weekly: 'أسبوعيًا', monthly: 'شهريًا' }
+        }) +
         '<label class="field"><span>ملاحظات</span><textarea name="notes" rows="2">' + U.escapeHTML(t.notes || '') + '</textarea></label>' +
         '<div class="form-actions">' +
           '<button type="submit" class="btn btn-primary">حفظ</button>' +
@@ -145,9 +215,22 @@
 
   function openTaskForm(t, onSaved) {
     UI.openModal(t && t.id ? 'تعديل مهمة' : 'مهمة جديدة', taskForm(t), function (root) {
+      const readRecur = wireRecur(root, 'due');
+      const dueLabel = root.querySelector('[name="due"]').closest('.field').querySelector('span');
+      root.querySelector('.freq-sel').addEventListener('change', function (e) {
+        dueLabel.textContent = e.target.value === 'none' ? 'الموعد النهائي' : 'تبدأ من';
+      });
+
       root.querySelector('#tkForm').addEventListener('submit', function (e) {
         e.preventDefault();
         const f = new FormData(e.target);
+        const recur = readRecur();
+        recur.skip = (t && t.recur && t.recur.skip) || [];
+        const repeating = recur.freq !== 'none';
+        if (repeating && !f.get('due')) {
+          UI.toast('حدّد تاريخ البداية للمهمة المتكرّرة', 'err');
+          return;
+        }
         Store.saveTask({
           id: t && t.id ? t.id : undefined,
           title: (f.get('title') || '').trim(),
@@ -156,9 +239,11 @@
           due: f.get('due') || '',
           estimate: (f.get('estimate') || '').trim(),
           notes: (f.get('notes') || '').trim(),
-          done: t ? !!t.done : false,
-          doneAt: t ? t.doneAt : null,
-          doneDate: t ? t.doneDate : null
+          recur: recur,
+          occ: (t && t.occ) || {},
+          done: repeating ? false : (t ? !!t.done : false),
+          doneAt: repeating ? null : (t ? t.doneAt : null),
+          doneDate: repeating ? null : (t ? t.doneDate : null)
         });
         UI.closeModal();
         UI.toast('تم حفظ المهمة ✔');

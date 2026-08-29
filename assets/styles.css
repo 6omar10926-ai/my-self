@@ -426,3 +426,21 @@ input,select,textarea{font-family:inherit;font-size:inherit}
 }
 
 img.brand-mark{display:block;border-radius:8px;flex-shrink:0}
+
+/* ===== التكرار: حقول النموذج والمعاينة ===== */
+.recur-box{display:flex;flex-direction:column;gap:10px}
+.interval-row{flex-direction:row;align-items:center;gap:10px}
+.interval-label{font-size:.82rem;color:var(--muted);font-weight:500;white-space:nowrap}
+.interval-row input{width:84px;text-align:center;flex:none}
+.days-block{display:flex;flex-direction:column;gap:4px}
+.recur-preview{margin:0;padding-top:6px;border-top:1px dashed var(--border);line-height:1.7}
+
+/* ===== المهام المتكرّرة ===== */
+.card.is-routine{border-inline-start-style:double;border-inline-start-width:6px}
+.streak{color:var(--warn);font-weight:600}
+.task-card.is-done .streak{color:var(--ok)}
+
+.check.is-template{
+  border-style:dashed;background:var(--surface-2);color:var(--muted);
+  font-size:.8rem;cursor:default;
+}
